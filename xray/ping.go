@@ -11,6 +11,10 @@ import (
 // url means the website we use to test speed. "https://www.google.com" is a good choice for most cases.
 // proxy means the local http/socks5 proxy, like "socks5://[::1]:1080".
 func Ping(datDir string, configPath string, timeout int, url string, proxy string) (int64, error) {
+	return PingWithType(datDir, configPath, timeout, url, proxy, "head")
+}
+
+func PingWithType(datDir string, configPath string, timeout int, url string, proxy string, pingType string) (int64, error) {
 	InitEnv(datDir, "")
 	server, err := StartXray(configPath)
 	if err != nil {
@@ -22,7 +26,7 @@ func Ping(datDir string, configPath string, timeout int, url string, proxy strin
 	}
 	defer server.Close()
 
-	delay, err := nodep.MeasureDelay(timeout, url, proxy)
+	delay, err := nodep.MeasureDelayWithType(timeout, url, proxy, pingType)
 	if err != nil {
 		return delay, err
 	}
