@@ -27,25 +27,34 @@ func MeasureDelay(timeout int, url string, proxy string) (int64, error) {
 }
 
 func MeasureDelayWithType(timeout int, target string, proxy string, pingType string) (int64, error) {
+	return MeasureDelayWithContext(context.Background(), timeout, target, proxy, pingType)
+}
+
+func MeasureDelayWithContext(ctx context.Context, timeout int, target string, proxy string, pingType string) (int64, error) {
+	if timeout <= 0 {
+		return PingDelayError, errors.New("ping timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second*time.Duration(timeout))
+	defer cancel()
 	switch strings.ToLower(strings.TrimSpace(pingType)) {
 	case "get":
-		return measureHTTPDelay(timeout, target, proxy, http.MethodGet)
+		return measureHTTPDelay(ctx, timeout, target, proxy, http.MethodGet)
 	case "tcp":
-		return measureTCPDelay(timeout, target, proxy)
+		return measureTCPDelay(ctx, timeout, target, proxy)
 	case "head", "":
-		return measureHTTPDelay(timeout, target, proxy, http.MethodHead)
+		return measureHTTPDelay(ctx, timeout, target, proxy, http.MethodHead)
 	default:
 		return PingDelayError, errors.New("unsupported ping type: " + pingType)
 	}
 }
 
-func measureHTTPDelay(timeout int, target string, proxy string, method string) (int64, error) {
+func measureHTTPDelay(ctx context.Context, timeout int, target string, proxy string, method string) (int64, error) {
 	httpTimeout := time.Second * time.Duration(timeout)
-	c, err := CoreHTTPClient(httpTimeout, proxy)
+	c, err := CoreHTTPClient(ctx, httpTimeout, proxy)
 	if err != nil {
 		return PingDelayError, err
 	}
-	delay, err := PingHTTPRequest(c, target, timeout, method)
+	delay, err := pingHTTPRequest(ctx, c, target, timeout, method)
 	if err != nil {
 		return delay, err
 	}
@@ -53,7 +62,7 @@ func measureHTTPDelay(timeout int, target string, proxy string, method string) (
 	return delay, nil
 }
 
-func CoreHTTPClient(timeout time.Duration, proxy string) (*http.Client, error) {
+func CoreHTTPClient(ctx context.Context, timeout time.Duration, proxy string) (*http.Client, error) {
 	dialContext, err := coreDialContext(timeout, proxy)
 	if err != nil {
 		return nil, err
@@ -64,7 +73,11 @@ func CoreHTTPClient(timeout time.Duration, proxy string) (*http.Client, error) {
 		ForceAttemptHTTP2:     false,
 		ResponseHeaderTimeout: timeout,
 		TLSHandshakeTimeout:   timeout,
-		DialContext:           dialContext,
+		// Transport detaches request cancellation while dialing to allow connection reuse.
+		// A ping owns its dial exclusively, so its context must also cancel the handshake.
+		DialContext: func(_ context.Context, network, address string) (net.Conn, error) {
+			return dialContext(ctx, network, address)
+		},
 	}
 
 	c := &http.Client{
@@ -75,9 +88,12 @@ func CoreHTTPClient(timeout time.Duration, proxy string) (*http.Client, error) {
 	return c, nil
 }
 
-func PingHTTPRequest(c *http.Client, url string, timeout int, method string) (int64, error) {
+func pingHTTPRequest(ctx context.Context, c *http.Client, url string, timeout int, method string) (int64, error) {
 	start := time.Now()
-	req, _ := http.NewRequest(method, url, nil)
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return PingDelayError, err
+	}
 	req.Close = true
 	req.Header.Set("User-Agent", "yaxc-ping")
 	req.Header.Set("Accept", "*/*")
@@ -96,33 +112,19 @@ func PingHTTPRequest(c *http.Client, url string, timeout int, method string) (in
 	return delay, nil
 }
 
-func measureTCPDelay(timeout int, target string, proxy string) (int64, error) {
+func measureTCPDelay(ctx context.Context, timeout int, target string, proxy string) (int64, error) {
 	address, err := resolveTCPTarget(target)
 	if err != nil {
 		return PingDelayError, err
 	}
-	deadline := time.Second * time.Duration(timeout)
-	baseDialer := &net.Dialer{Timeout: deadline}
+	dialContext, err := coreDialContext(time.Second*time.Duration(timeout), proxy)
+	if err != nil {
+		return PingDelayError, err
+	}
 	start := time.Now()
-	var conn net.Conn
-	if len(proxy) > 0 {
-		proxyURL, err := url.Parse(proxy)
-		if err != nil {
-			return PingDelayError, err
-		}
-		dialer, err := xproxy.FromURL(proxyURL, baseDialer)
-		if err != nil {
-			return PingDelayError, err
-		}
-		conn, err = dialer.Dial("tcp", address)
-		if err != nil {
-			return mapDelayError(start, timeout, err)
-		}
-	} else {
-		conn, err = baseDialer.Dial("tcp", address)
-		if err != nil {
-			return mapDelayError(start, timeout, err)
-		}
+	conn, err := dialContext(ctx, "tcp", address)
+	if err != nil {
+		return mapDelayError(start, timeout, err)
 	}
 	defer conn.Close()
 	return time.Since(start).Milliseconds(), nil
@@ -149,7 +151,7 @@ func resolveTCPTarget(target string) (string, error) {
 }
 
 func coreDialContext(timeout time.Duration, proxy string) (func(context.Context, string, string) (net.Conn, error), error) {
-	baseDialer := &net.Dialer{Timeout: timeout}
+	baseDialer := &deadlineDialer{Dialer: net.Dialer{Timeout: timeout}, timeout: timeout}
 	if len(proxy) == 0 {
 		return baseDialer.DialContext, nil
 	}
@@ -163,25 +165,47 @@ func coreDialContext(timeout time.Duration, proxy string) (func(context.Context,
 		return nil, err
 	}
 
-	type dialResult struct {
-		conn net.Conn
-		err  error
+	contextDialer, ok := dialer.(xproxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("proxy dialer does not support cancellation")
 	}
-
 	return func(ctx context.Context, network string, address string) (net.Conn, error) {
-		resultCh := make(chan dialResult, 1)
-		go func() {
-			conn, err := dialer.Dial(network, address)
-			resultCh <- dialResult{conn: conn, err: err}
-		}()
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case result := <-resultCh:
-			return result.conn, result.err
+		conn, err := contextDialer.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
 		}
+		if err := conn.SetDeadline(time.Time{}); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return conn, nil
 	}, nil
+}
+
+// Bound the SOCKS handshake as well as the TCP connection to the proxy.
+type deadlineDialer struct {
+	net.Dialer
+	timeout time.Duration
+}
+
+func (d *deadlineDialer) Dial(network, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, address)
+}
+
+func (d *deadlineDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	conn, err := d.Dialer.DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(d.timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func mapDelayError(start time.Time, timeout int, err error) (int64, error) {

@@ -1,6 +1,10 @@
 package xray
 
 import (
+	"context"
+	"errors"
+	"time"
+
 	"github.com/xtls/libxray/nodep"
 )
 
@@ -15,18 +19,30 @@ func Ping(datDir string, configPath string, timeout int, url string, proxy strin
 }
 
 func PingWithType(datDir string, configPath string, timeout int, url string, proxy string, pingType string) (int64, error) {
+	return PingWithContext(context.Background(), datDir, configPath, timeout, url, proxy, pingType)
+}
+
+func PingWithContext(ctx context.Context, datDir string, configPath string, timeout int, url string, proxy string, pingType string) (int64, error) {
+	if timeout <= 0 {
+		return nodep.PingDelayError, errors.New("ping timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second*time.Duration(timeout))
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nodep.PingDelayError, err
+	}
 	InitEnv(datDir, "")
 	server, err := StartXray(configPath)
 	if err != nil {
 		return nodep.PingDelayError, err
 	}
+	defer server.Close()
 
 	if err := server.Start(); err != nil {
 		return nodep.PingDelayError, err
 	}
-	defer server.Close()
 
-	delay, err := nodep.MeasureDelayWithType(timeout, url, proxy, pingType)
+	delay, err := nodep.MeasureDelayWithContext(ctx, timeout, url, proxy, pingType)
 	if err != nil {
 		return delay, err
 	}
