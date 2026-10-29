@@ -3,6 +3,7 @@ package share
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -78,6 +79,9 @@ func parsePlainShareText(text string) (*conf.Config, error) {
 			if outbound, err := shareLink.outbound(); err == nil {
 				outbounds = append(outbounds, *outbound)
 			} else {
+				if errors.Is(err, errUnsupportedCapability) {
+					return nil, err
+				}
 				fmt.Println(err)
 			}
 		} else {
@@ -198,6 +202,9 @@ func (proxy xrayShareLink) shadowsocksOutbound() (*conf.OutboundDetourConfig, er
 	}
 	settings.Cipher = pwConfig[0]
 	settings.Password = pwConfig[1]
+	if err := checkShadowsocksCapabilities(settings.Cipher, false); err != nil {
+		return nil, err
+	}
 
 	settingsRawMessage, err := convertJsonToRawMessage(settings)
 	if err != nil {
@@ -432,8 +439,17 @@ func (proxy xrayShareLink) hysteriaOutbound() (*conf.OutboundDetourConfig, error
 		}
 		streamSettings.TLSSettings = tlsSettings
 
+		fm := query.Get("fm")
+		if len(fm) > 0 {
+			var finalMask *conf.FinalMask
+			if err := json.Unmarshal([]byte(fm), &finalMask); err != nil {
+				return nil, err
+			}
+			streamSettings.FinalMask = finalMask
+		}
+
 		obfsPassword := query.Get("obfs-password")
-		if len(obfsPassword) > 0 {
+		if len(obfsPassword) > 0 && len(fm) == 0 {
 			obfs := conf.Mask{}
 			obfs.Type = "salamander"
 
@@ -548,12 +564,7 @@ func (proxy xrayShareLink) streamSettings(link *url.URL) (*conf.StreamConfig, er
 
 		extra := query.Get("extra")
 		if len(extra) > 0 {
-			var extraConfig *conf.SplitHTTPConfig
-			err := json.Unmarshal([]byte(extra), &extraConfig)
-			if err != nil {
-				return nil, err
-			}
-			extraRawMessage, err := convertJsonToRawMessage(extraConfig)
+			extraRawMessage, err := normalizeXHTTPExtra(json.RawMessage(extra))
 			if err != nil {
 				return nil, err
 			}

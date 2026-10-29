@@ -31,7 +31,7 @@ func PingWithContext(ctx context.Context, datDir string, configPath string, time
 	if err := ctx.Err(); err != nil {
 		return nodep.PingDelayError, err
 	}
-	InitEnv(datDir, "")
+	InitEnv(datDir)
 	server, err := StartXray(configPath)
 	if err != nil {
 		return nodep.PingDelayError, err

@@ -10,7 +10,7 @@ from app.cmd import (
 )
 
 XRAY_CORE_REPO = "https://github.com/XTLS/Xray-core.git"
-XRAY_CORE_VERSION = "v26.2.6"
+XRAY_CORE_VERSION = "v26.10.21"
 XRAY_CORE_DIR_NAME = "Xray-core-libXray"
 LIBXRAY_MOD_NAME = "github.com/xtls/libxray"
 

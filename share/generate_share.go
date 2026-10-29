@@ -3,6 +3,7 @@ package share
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -30,6 +31,8 @@ func ConvertXrayJsonToShareLinks(xrayBytes []byte) (string, error) {
 		link, err := shareLink(outbound)
 		if err == nil {
 			links = append(links, link.String())
+		} else if errors.Is(err, errUnsupportedCapability) {
+			return "", err
 		}
 	}
 	if len(links) == 0 {
@@ -83,6 +86,9 @@ func shadowsocksLink(proxy conf.OutboundDetourConfig, link *url.URL) error {
 	var settings *conf.ShadowsocksClientConfig
 	err := json.Unmarshal(*proxy.Settings, &settings)
 	if err != nil {
+		return err
+	}
+	if err := checkShadowsocksCapabilities(settings.Cipher, false); err != nil {
 		return err
 	}
 
@@ -210,15 +216,17 @@ func streamSettingsQuery(proxy conf.OutboundDetourConfig, link *url.URL) {
 			}
 		}
 
-		if streamSettings.FinalMask != nil && len(streamSettings.FinalMask.Udp) > 0 {
-			mask := streamSettings.FinalMask.Udp[0]
-			if mask.Settings != nil {
+		if finalMask := streamSettings.FinalMask; finalMask != nil {
+			if len(finalMask.Tcp) == 0 && finalMask.QuicParams == nil && len(finalMask.Udp) == 1 && finalMask.Udp[0].Type == "salamander" && finalMask.Udp[0].Settings != nil {
 				var obfs *conf.Salamander
-				err := json.Unmarshal(*mask.Settings, &obfs)
+				err := json.Unmarshal(*finalMask.Udp[0].Settings, &obfs)
 				if err == nil {
 					query = addQuery(query, "obfs", "salamander")
 					query = addQuery(query, "obfs-password", obfs.Password)
 				}
+			}
+			if fmBytes, err := json.Marshal(finalMask); err == nil {
+				query = addQuery(query, "fm", string(fmBytes))
 			}
 		}
 		link.RawQuery = query
@@ -349,13 +357,9 @@ func streamSettingsQuery(proxy conf.OutboundDetourConfig, link *url.URL) {
 		}
 		extra := streamSettings.XHTTPSettings.Extra
 		if extra != nil {
-			var extraConfig *conf.SplitHTTPConfig
-			err := json.Unmarshal(extra, &extraConfig)
+			extraBytes, err := normalizeXHTTPExtra(extra)
 			if err == nil {
-				extraBytes, err := json.Marshal(extraConfig)
-				if err == nil {
-					query = addQuery(query, "extra", string(extraBytes))
-				}
+				query = addQuery(query, "extra", string(extraBytes))
 			}
 		}
 	}

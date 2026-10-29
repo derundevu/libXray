@@ -1,6 +1,7 @@
 package share
 
 import (
+	"errors"
 	"fmt"
 
 	"gopkg.in/yaml.v3"
@@ -97,11 +98,10 @@ func tryToParseClashYaml(text string) (*conf.Config, error) {
 		return nil, err
 	}
 
-	xray := clash.xrayConfig()
-	return xray, nil
+	return clash.xrayConfig()
 }
 
-func (clash ClashYaml) xrayConfig() *conf.Config {
+func (clash ClashYaml) xrayConfig() (*conf.Config, error) {
 	xray := &conf.Config{}
 
 	var outbounds []conf.OutboundDetourConfig
@@ -109,12 +109,15 @@ func (clash ClashYaml) xrayConfig() *conf.Config {
 		if outbound, err := proxy.outbound(); err == nil {
 			outbounds = append(outbounds, *outbound)
 		} else {
+			if errors.Is(err, errUnsupportedCapability) {
+				return nil, err
+			}
 			fmt.Println(err)
 		}
 	}
 	xray.OutboundConfigs = outbounds
 
-	return xray
+	return xray, nil
 }
 
 func (proxy ClashProxy) outbound() (*conf.OutboundDetourConfig, error) {
@@ -163,6 +166,9 @@ func (proxy ClashProxy) outbound() (*conf.OutboundDetourConfig, error) {
 }
 
 func (proxy ClashProxy) shadowsocksOutbound() (*conf.OutboundDetourConfig, error) {
+	if err := checkShadowsocksCapabilities(proxy.Cipher, proxy.UdpOverTcp); err != nil {
+		return nil, err
+	}
 	outbound := &conf.OutboundDetourConfig{}
 	outbound.Protocol = "shadowsocks"
 	setOutboundName(outbound, proxy.Name)
@@ -174,7 +180,6 @@ func (proxy ClashProxy) shadowsocksOutbound() (*conf.OutboundDetourConfig, error
 
 	settings.Cipher = proxy.Cipher
 	settings.Password = proxy.Password
-	settings.UoT = proxy.UdpOverTcp
 
 	settingsRawMessage, err := convertJsonToRawMessage(settings)
 	if err != nil {
@@ -399,29 +404,12 @@ func (proxy ClashProxy) streamSettings(outbound conf.OutboundDetourConfig) (*con
 		hysteriaSettings := &conf.HysteriaConfig{}
 		hysteriaSettings.Version = 2
 		hysteriaSettings.Auth = proxy.Password
-		if len(proxy.Up) > 0 {
-			up := conf.Bandwidth(proxy.Up)
-			hysteriaSettings.Up = &up
-		}
-		if len(proxy.Down) > 0 {
-			down := conf.Bandwidth(proxy.Down)
-			hysteriaSettings.Down = &down
-		}
-		if len(proxy.Ports) > 0 {
-			udpHop := conf.UdpHop{}
-			portListRawMessage, err := convertJsonToRawMessage(proxy.Ports)
-			if err != nil {
-				return nil, err
+		finalMask := &conf.FinalMask{}
+		if len(proxy.Up) > 0 || len(proxy.Down) > 0 {
+			finalMask.QuicParams = &conf.QuicParamsConfig{
+				BrutalUp:   conf.Bandwidth(proxy.Up),
+				BrutalDown: conf.Bandwidth(proxy.Down),
 			}
-			udpHop.PortList = portListRawMessage
-
-			interval := conf.Int32Range{}
-			interval.Left = proxy.HopInterval
-			interval.Right = proxy.HopInterval
-
-			udpHop.Interval = &interval
-
-			hysteriaSettings.UdpHop = &udpHop
 		}
 		streamSettings.HysteriaSettings = hysteriaSettings
 		// udpmasks
@@ -439,11 +427,34 @@ func (proxy ClashProxy) streamSettings(outbound conf.OutboundDetourConfig) (*con
 
 			obfs.Settings = &settingsRawMessage
 
-			udp := []conf.Mask{obfs}
-			finalMask := conf.FinalMask{}
-			finalMask.Udp = udp
-
-			streamSettings.FinalMask = &finalMask
+			finalMask.Udp = append(finalMask.Udp, obfs)
+		}
+		if len(proxy.Ports) > 0 {
+			udpHop := &conf.UDPHop{
+				Mode: "intervalLocal,intervalRemote",
+				Interval: conf.Int32Range{
+					Left:  proxy.HopInterval,
+					Right: proxy.HopInterval,
+					From:  proxy.HopInterval,
+					To:    proxy.HopInterval,
+				},
+			}
+			portListRawMessage, err := convertJsonToRawMessage(proxy.Ports)
+			if err != nil {
+				return nil, err
+			}
+			if err := udpHop.RemotePorts.UnmarshalJSON(portListRawMessage); err != nil {
+				return nil, err
+			}
+			settingsRawMessage, err := convertJsonToRawMessage(udpHop)
+			if err != nil {
+				return nil, err
+			}
+			// Dial-handling masks must be last in Xray's configured mask order.
+			finalMask.Udp = append(finalMask.Udp, conf.Mask{Type: "udphop", Settings: &settingsRawMessage})
+		}
+		if finalMask.QuicParams != nil || len(finalMask.Udp) > 0 {
+			streamSettings.FinalMask = finalMask
 		}
 	}
 	proxy.parseSecurity(streamSettings, outbound)
