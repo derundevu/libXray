@@ -8,7 +8,7 @@ This is a wrapper around [Xray-core](https://github.com/XTLS/Xray-core) to impro
 
 1. This repository has few maintainers. If you do not report a bug or initiate a PR, your issue will be ignored.
 2. This repository does not guarantee API stability, you need to adapt it yourself.
-3. This repository is only compatible with the latest release of Xray-core.
+3. This retained fork targets Xray-core `v26.10.29` and keeps its file-path/Base64 wrapper API rather than adopting Invoke API v3.
 
 # Features
 
@@ -17,6 +17,10 @@ This is a wrapper around [Xray-core](https://github.com/XTLS/Xray-core) to impro
 Compile script. It is recommended to always use this script to compile libXray. We will not answer questions caused by using other compilation methods.
 
 depends on git and go.
+
+The standalone build script clones [Xray-core](https://github.com/XTLS/Xray-core) at tag `v26.10.29`.
+The retained `go.mod` selects the same release through pseudo-version `v1.260327.1-0.20261029083850-0afec66085a8` and keeps Go `1.27.3`.
+For the yaxc Android AAR, use the parent project's `buildXrayCore.sh`, which consumes the local forks and pinned gomobile toolchain.
 
 ### Usage
 
