@@ -8,7 +8,7 @@ This is a wrapper around [Xray-core](https://github.com/XTLS/Xray-core) to impro
 
 1. This repository has few maintainers. If you do not report a bug or initiate a PR, your issue will be ignored.
 2. This repository does not guarantee API stability, you need to adapt it yourself.
-3. This retained fork targets Xray-core `v26.10.29` and keeps its file-path/Base64 wrapper API rather than adopting Invoke API v3.
+3. This retained fork targets Xray-core `v26.10.31` (upstream base `a4a3dff5b20c2faae567b742c172c7b95e75c083`) and keeps its file-path/Base64 wrapper API rather than adopting Invoke API v3.
 
 # Features
 
@@ -18,8 +18,8 @@ Compile script. It is recommended to always use this script to compile libXray. 
 
 depends on git and go.
 
-The standalone build script clones [Xray-core](https://github.com/XTLS/Xray-core) at tag `v26.10.29`.
-The retained `go.mod` selects the same release through pseudo-version `v1.260327.1-0.20261029083850-0afec66085a8` and keeps Go `1.27.3`.
+The standalone build script clones [Xray-core](https://github.com/XTLS/Xray-core) at tag `v26.10.31`.
+The retained `go.mod` selects that exact upstream release through its resolved official pseudo-version `v1.260327.1-0.20261031132019-a4a3dff5b20c` and keeps Go `1.27.3`.
 For the yaxc Android AAR, use the parent project's `buildXrayCore.sh`, which consumes the local forks and pinned gomobile toolchain.
 
 ### Usage
@@ -130,6 +130,8 @@ Get free ports.
 ## share
 
 libXray uses `sendThrough` to store outbound names.
+
+XHTTP share import/export preserves `extra.h2Params`, unknown provider options, and both the `xhttp` and `splithttp` transport names. When exporting settings without `extra`, top-level `h2Params` is carried in the share link's `extra` object. If `extra` is present, it takes precedence over top-level options, matching Xray-core's configuration builder. Legacy `sessionPlacement` and `sessionKey` fields in `extra` are normalized to `sessionIDPlacement` and `sessionIDKey`; existing current-name values take precedence.
 
 ### clash_meta
 

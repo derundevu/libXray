@@ -339,7 +339,7 @@ func streamSettingsQuery(proxy conf.OutboundDetourConfig, link *url.URL) {
 		if len(path) > 0 {
 			query = addQuery(query, "path", path)
 		}
-	case "xhttp":
+	case "xhttp", "splithttp":
 		if streamSettings.XHTTPSettings == nil {
 			break
 		}
@@ -356,6 +356,12 @@ func streamSettingsQuery(proxy conf.OutboundDetourConfig, link *url.URL) {
 			query = addQuery(query, "mode", mode)
 		}
 		extra := streamSettings.XHTTPSettings.Extra
+		// Like SplitHTTPConfig.Build, extra takes precedence over top-level options.
+		if extra == nil && streamSettings.XHTTPSettings.H2Params != nil {
+			extra, _ = json.Marshal(struct {
+				H2Params json.RawMessage `json:"h2Params"`
+			}{H2Params: streamSettings.XHTTPSettings.H2Params})
+		}
 		if extra != nil {
 			extraBytes, err := normalizeXHTTPExtra(extra)
 			if err == nil {
